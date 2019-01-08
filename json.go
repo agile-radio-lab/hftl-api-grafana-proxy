@@ -14,6 +14,12 @@ type Range struct {
 	To   time.Time `json:"to"`
 }
 
+// RangeRaw specifies the time range the request is valid for.
+type RangeRaw struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // Annotation is the object passed by Grafana when it fetches annotations.
 //
 // http://docs.grafana.org/plugins/developing/datasources/#annotation-query
@@ -43,4 +49,63 @@ type AnnotationResponse struct {
 	Tags string `json:"tags"`
 	// Text for the annotation. (optional)
 	Text string `json:"text"`
+}
+
+// QueryTarget query targets field
+type QueryTarget struct {
+	ReferenceID string `json:"refId"`
+	Target      string `json:"target"`
+	Hide        bool   `json:"hide"`
+	Type        string `json:"type"`
+}
+
+// Metric is a metric type
+type Metric struct {
+	Text  interface{} `json:"text"`
+	Value interface{} `json:"value"`
+}
+
+// TableColumn response table column
+type TableColumn struct {
+	Text string `json:"text"`
+	Type string `json:"type"`
+}
+
+// QueryResponseTimeserie grafana timeserie query response
+type QueryResponseTimeserie struct {
+	Target     string          `json:"target"`
+	DataPoints [][]interface{} `json:"datapoints"`
+}
+
+// QueryResponseTable grafana table query response
+type QueryResponseTable struct {
+	Type    string          `json:"type"`
+	Columns []TableColumn   `json:"columns"`
+	Rows    [][]interface{} `json:"rows"`
+	Target  string          `json:"target"`
+}
+
+// QueryRequest grafana query request
+type QueryRequest struct {
+	Timezone      string            `json:"timezone"`
+	PanelID       int               `json:"panelId"`
+	Range         Range             `json:"range"`
+	RangeRaw      RangeRaw          `json:"rangeRaw"`
+	Interval      string            `json:"interval"`
+	Targets       []QueryTarget     `json:"targets"`
+	Format        string            `json:"format"`
+	MaxDataPoints int64             `json:"maxDataPoints"`
+	IntervalMs    int               `json:"intervalMs"`
+	Type          string            `json:"type"`
+	ScopedVars    map[string]Metric `json:"scopedVars"`
+}
+
+// QueryResponse grafana query response
+type QueryResponse struct {
+	Data interface{} `json:"data"`
+}
+
+// SearchResponse grafana search response
+type SearchResponse struct {
+	Data []string `json:"data"`
 }

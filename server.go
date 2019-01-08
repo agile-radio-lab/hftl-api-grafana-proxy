@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"bitbucket.org/hftloai/hftlapiconnector/models"
+
+	"bitbucket.org/hftloai/hftlapiconnector"
 )
 
 type server struct {
@@ -16,6 +21,8 @@ type server struct {
 	ctx    context.Context
 	i      int
 	events []AnnotationResponse
+
+	apiConn *hftlapiconnector.APIClient
 }
 
 func newServer() *server {
@@ -60,12 +67,10 @@ func (s *server) generate(period time.Duration) {
 //
 // otherwise it emits "Unknown error"
 func (s *server) root(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v: %v", r.URL.Path, r.Method)
 	fmt.Fprintf(w, "ok\n")
 }
 
 func (s *server) annotations(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v: %v", r.URL.Path, r.Method)
 	switch r.Method {
 	case http.MethodOptions:
 	case http.MethodPost:
@@ -77,6 +82,143 @@ func (s *server) annotations(w http.ResponseWriter, r *http.Request) {
 
 		evs := s.filterEvents(ar.Annotation, ar.Range.From, ar.Range.To)
 		if err := json.NewEncoder(w).Encode(evs); err != nil {
+			log.Printf("json enc: %+v", err)
+		}
+	default:
+		http.Error(w, "bad method; supported OPTIONS, POST", http.StatusBadRequest)
+		return
+	}
+}
+
+func (s *server) getProcessingTimeResult(q *QueryRequest, t *string, args ...string) *QueryResponseTimeserie {
+	var res *[]models.APIProcessingState
+	res, err := s.apiConn.GetFunctionProcessingStates(args[1], &q.Range.From, &q.Range.To)
+	if err != nil {
+		log.Println(err.Error())
+		return nil
+	}
+
+	qResp := QueryResponseTimeserie{Target: *t}
+	for _, p := range *res {
+		dataPoint := make([]interface{}, 2)
+		dataPoint[0] = p.Result.ProcessingTimeMoments[0]
+		dataPoint[1] = p.FirstReportAt.UnixNano() / 1e6
+		qResp.DataPoints = append(qResp.DataPoints, dataPoint)
+	}
+	return &qResp
+}
+
+func (s *server) getUEResult(q *QueryRequest, t *string, args ...string) *QueryResponseTimeserie {
+	var res *[]models.APIUeState
+	res, err := s.apiConn.GetUEStates(args[1], &q.Range.From, &q.Range.To)
+	if err != nil {
+		log.Println(err.Error())
+		return nil
+	}
+
+	qResp := QueryResponseTimeserie{Target: *t}
+	for _, p := range *res {
+		dataPoint := make([]interface{}, 2)
+		var report *models.APIUeMacPhyReport
+		var rfReport *models.APIUeRfReport
+		if args[2] == "dl" {
+			report = p.Result.MacPhyReportDl
+			rfReport = p.Result.RfReportDl
+		} else if args[2] == "ul" {
+			report = p.Result.MacPhyReportUl
+			rfReport = p.Result.RfReportUl
+		} else {
+			return nil
+		}
+
+		switch args[3] {
+		case "mcs":
+			dataPoint[0] = report.Mcs
+			break
+		case "snr":
+			dataPoint[0] = rfReport.Snr
+			break
+		case "tp":
+			dataPoint[0] = (report.MacTp / 1e6) * 8
+			break
+		case "nbrb":
+			dataPoint[0] = report.NbRb
+			break
+		case "wbcqi":
+			dataPoint[0] = report.WidebandCqi
+			break
+		}
+
+		dataPoint[1] = p.FirstReportAt.UnixNano() / 1e6
+		qResp.DataPoints = append(qResp.DataPoints, dataPoint)
+	}
+	return &qResp
+}
+
+func (s *server) getQueryResult(q QueryRequest) *[]interface{} {
+	if val, ok := q.ScopedVars["SessionID"]; ok {
+		s.apiConn.SessionID = val.Text.(string)
+	} else {
+		return nil
+	}
+
+	resp := make([]interface{}, len(q.Targets))
+	for ti, target := range q.Targets {
+		if target.Type == "timeseries" {
+			args := strings.Split(target.Target, "_")
+
+			if len(args) < 2 {
+				continue
+			}
+			if args[0] == "ptime" {
+				resp[ti] = s.getProcessingTimeResult(&q, &target.Target, args...)
+			}
+			if args[0] == "ue" {
+				resp[ti] = s.getUEResult(&q, &target.Target, args...)
+			}
+		}
+	}
+	return &resp
+}
+
+func (s *server) queries(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+	case http.MethodPost:
+		qr := QueryRequest{}
+		if err := json.NewDecoder(r.Body).Decode(&qr); err != nil {
+			http.Error(w, fmt.Sprintf("json decode failure: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		resp := s.getQueryResult(qr)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("json enc: %+v", err)
+		}
+	default:
+		http.Error(w, "bad method; supported OPTIONS, POST", http.StatusBadRequest)
+		return
+	}
+}
+
+func (s *server) searches(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+	case http.MethodPost:
+		resp := []string{}
+		resp = append(resp, "ptime_DL encoding")
+		resp = append(resp, "ptime_UL decoding")
+		resp = append(resp, "ue_0_dl_mcs")
+		resp = append(resp, "ue_0_dl_tp")
+		resp = append(resp, "ue_0_dl_nbrb")
+		resp = append(resp, "ue_0_dl_wbcqi")
+		resp = append(resp, "ue_0_ul_mcs")
+		resp = append(resp, "ue_0_ul_tp")
+		resp = append(resp, "ue_0_ul_nbrb")
+		resp = append(resp, "ue_0_ul_wbcqi")
+		resp = append(resp, "ue_0_ul_snr")
+
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			log.Printf("json enc: %+v", err)
 		}
 	default:
