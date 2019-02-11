@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -70,6 +71,24 @@ func (s *server) root(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "ok\n")
 }
 
+func (s *server) latencyLoop() {
+	for {
+		s.apiConn.SessionID = "srsLTE"
+		dtStart, err := time.Parse(time.RFC3339Nano, "2019-01-15T13:19:40.000Z")
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+		dtEnd := dtStart.Add(1 * time.Second)
+		cnt, cntLost, err := getLatency(dtStart, dtEnd, 17)
+		if err != nil {
+			fmt.Println(err.Error())
+		} else {
+			fmt.Println(*cnt, *cntLost)
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
+}
+
 func (s *server) annotations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
@@ -88,6 +107,46 @@ func (s *server) annotations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad method; supported OPTIONS, POST", http.StatusBadRequest)
 		return
 	}
+}
+
+func (s *server) getProcessingTimeThresholdResult(q *QueryRequest, t *string, args ...string) *QueryResponseTable {
+	qResp := QueryResponseTable{Target: *t}
+	qResp.Columns = append(qResp.Columns, TableColumn{Text: "TMean", Type: "number"})
+	qResp.Columns = append(qResp.Columns, TableColumn{Text: "TStd", Type: "number"})
+
+	dataPoint := make([]interface{}, 2)
+	dataPoint[0] = 60
+	dataPoint[1] = 0
+	qResp.Rows = append(qResp.Rows, dataPoint)
+
+	dataPoint = make([]interface{}, 2)
+	dataPoint[0] = 0
+	dataPoint[1] = 20
+	qResp.Rows = append(qResp.Rows, dataPoint)
+
+	return &qResp
+}
+
+func (s *server) getProcessingTimeStatsResult(q *QueryRequest, t *string, args ...string) *QueryResponseTable {
+	var res *[]models.APIProcessingState
+	res, err := s.apiConn.GetFunctionProcessingStates(args[1], &q.Range.From, &q.Range.To)
+	if err != nil {
+		log.Println(err.Error())
+		return nil
+	}
+
+	qResp := QueryResponseTable{Target: *t}
+	qResp.Columns = append(qResp.Columns, TableColumn{Text: "Mean", Type: "number"})
+	qResp.Columns = append(qResp.Columns, TableColumn{Text: "Std", Type: "number"})
+	qResp.Columns = append(qResp.Columns, TableColumn{Text: "Time", Type: "number"})
+	for _, p := range *res {
+		dataPoint := make([]interface{}, 3)
+		dataPoint[0] = p.Result.ProcessingTimeMoments[0]
+		dataPoint[1] = math.Sqrt(float64(p.Result.ProcessingTimeMoments[1]) - math.Pow(float64(p.Result.ProcessingTimeMoments[0]), 2))
+		dataPoint[2] = p.LastReportAt.Unix()
+		qResp.Rows = append(qResp.Rows, dataPoint)
+	}
+	return &qResp
 }
 
 func (s *server) getProcessingTimeResult(q *QueryRequest, t *string, args ...string) *QueryResponseTimeserie {
@@ -109,9 +168,17 @@ func (s *server) getProcessingTimeResult(q *QueryRequest, t *string, args ...str
 }
 
 func (s *server) getUEResult(q *QueryRequest, t *string, args ...string) *QueryResponseTimeserie {
+
 	var res *[]models.APIUeState
-	res, err := s.apiConn.GetUEStates(args[1], &q.Range.From, &q.Range.To)
+
+	isUe := false
+	if args[0] == "ueself" {
+		isUe = true
+	}
+
+	res, err := s.apiConn.GetUEStates(args[1], &q.Range.From, &q.Range.To, &isUe)
 	if err != nil {
+		fmt.Println(args[1], q.Range.From, q.Range.To, isUe)
 		log.Println(err.Error())
 		return nil
 	}
@@ -173,8 +240,20 @@ func (s *server) getQueryResult(q QueryRequest) *[]interface{} {
 			if args[0] == "ptime" {
 				resp[ti] = s.getProcessingTimeResult(&q, &target.Target, args...)
 			}
-			if args[0] == "ue" {
+			if args[0] == "ue" || args[0] == "ueself" {
 				resp[ti] = s.getUEResult(&q, &target.Target, args...)
+			}
+		} else if target.Type == "table" {
+			args := strings.Split(target.Target, "_")
+
+			if len(args) < 2 {
+				continue
+			}
+			if args[0] == "statsptime" {
+				resp[ti] = s.getProcessingTimeStatsResult(&q, &target.Target, args...)
+			}
+			if args[0] == "threshold" {
+				resp[ti] = s.getProcessingTimeThresholdResult(&q, &target.Target, args...)
 			}
 		}
 	}
@@ -206,12 +285,15 @@ func (s *server) searches(w http.ResponseWriter, r *http.Request) {
 	case http.MethodOptions:
 	case http.MethodPost:
 		resp := []string{}
+		resp = append(resp, "threshold_DL encoding")
+		resp = append(resp, "statsptime_DL encoding")
 		resp = append(resp, "ptime_DL encoding")
 		resp = append(resp, "ptime_UL decoding")
 		resp = append(resp, "ue_0_dl_mcs")
 		resp = append(resp, "ue_0_dl_tp")
 		resp = append(resp, "ue_0_dl_nbrb")
 		resp = append(resp, "ue_0_dl_wbcqi")
+		resp = append(resp, "ueself_0_dl_snr")
 		resp = append(resp, "ue_0_ul_mcs")
 		resp = append(resp, "ue_0_ul_tp")
 		resp = append(resp, "ue_0_ul_nbrb")
